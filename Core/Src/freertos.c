@@ -21,6 +21,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -43,6 +44,13 @@ int _write(int file, char *ptr, int len)
     HAL_UART_Transmit(&huart3, (uint8_t*)ptr, len, HAL_MAX_DELAY);
     return len;
 }
+
+#define SPI1_DONE (1U << 0)
+#define SPI4_DONE (1U << 1)
+
+
+volatile uint8_t rxSPI1;
+volatile uint8_t rxSPI4;
 
 /* USER CODE END Includes */
 
@@ -67,19 +75,17 @@ int _write(int file, char *ptr, int len)
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
 /* USER CODE END Variables */
+osThreadId defaultTaskHandle;
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-#define MAX_PAYLOAD 255
-
-uint8_t ch;
-uint8_t loopback_rx_buff[MAX_PAYLOAD];
+//uint8_t Consolebuff[MAX_PAYLOAD];
+packet_t cmd;
 
 QueueHandle_t packetQueue;
 QueueHandle_t routeMsgQueue;
 static QueueHandle_t periphQueueTable[PERIPH_COUNT];
 QueueHandle_t resultQueue;
-
 
 TaskHandle_t uartRxTask_Handle;
 TaskHandle_t dispatcherTask_Handle;
@@ -92,54 +98,41 @@ TaskHandle_t uartTx_Handle;
 
 
 void uartRxTask(void *argument){
-    static uint8_t buff[MAX_PAYLOAD];
-    static uint8_t idx;
-    for(;;){
-		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-		if(ch!='\r'&&ch!='\n'&&idx<MAX_PAYLOAD-1)
-		{
-			HAL_UART_Transmit_IT(&huart3, &ch, 1);
-			buff[idx++]=ch;
-		}else
-		{
-			packet_t* rxPacket = initPacket(buff, idx);
-		    idx = 0;
-			if(rxPacket){
-			if (xQueueSend(packetQueue, &rxPacket, portMAX_DELAY) != pdTRUE){
-				vPortFree(rxPacket->payLoad);
-				vPortFree(rxPacket);
-				printf("Send msg on QUEUE failed!\r\n");
-			}
-			}
-		}
-		HAL_UART_Receive_IT(&huart3,&ch,1);
-	}
+	for(;;){
+    	 /* 1. WAIT: receive CMD from GBB */
+    			ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    				 printPacket(&cmd);
+    				 if (xQueueSend(routeMsgQueue, &cmd, portMAX_DELAY) != pdTRUE){
+    					 printf("Send msg on QUEUE failed!\r\n");
+    				 }
+    					HAL_UART_Receive_IT(&huart2,(uint8_t*)&cmd,sizeof(packet_t));
+    			}
 }
 
-void dispatcherTask(void *arg){
-	packet_t *pktCHECK;
-	static uint32_t g_testIdCounter;
-	for(;;)
-	{
-		if(xQueueReceive(packetQueue, &pktCHECK, portMAX_DELAY)==pdTRUE)
-		{
-			fillPacketMeta(pktCHECK,&g_testIdCounter);
-			if(xQueueSend(routeMsgQueue,&pktCHECK,portMAX_DELAY)!=pdTRUE)
-			{
-				vPortFree(pktCHECK->payLoad);
-				vPortFree(pktCHECK);
-				printf("sending to routeMsgQueue Failed\r\n");
-			}
-		}
-	}
-}
+
+
+
+//void dispatcherTask(void *arg){
+//	packet_t pktCHECK;
+//	for(;;)
+//	{
+//		if(xQueueReceive(packetQueue, &pktCHECK, portMAX_DELAY)==pdTRUE)
+//		{
+//			fillPacketMeta(pktCHECK,&g_testIdCounter);
+//			if(xQueueSend(routeMsgQueue,&pktCHECK,portMAX_DELAY)!=pdTRUE)
+//			{
+//				printf("sending to routeMsgQueue Failed\r\n");
+//			}
+//		}
+//	}
+//}
 
 
 void routerTask(void *arg){
-	packet_t * routerPKT;
+	packet_t routerPKT;
 	for(;;){
 		if(xQueueReceive(routeMsgQueue, &routerPKT,portMAX_DELAY)==pdTRUE){
-			if(xQueueSend(periphQueueTable[routerPKT->PERIPHERAL],&routerPKT,portMAX_DELAY)!=pdTRUE){
+			if(xQueueSend(periphQueueTable[routerPKT.PERIPHERAL],&routerPKT,portMAX_DELAY)!=pdTRUE){
 				printf("error sending to peripheral\r\n");
 			}
 		}
@@ -147,49 +140,47 @@ void routerTask(void *arg){
 }
 
 void UARTPeriphCheckTASK(void *arg){
-	packet_t* UART_PKT;
+	packet_t UART_PKT;
 	resProtocol result;
 	for(;;){
 		if(xQueueReceive(periphQueueTable[UART], &UART_PKT, portMAX_DELAY)==pdTRUE){
-			result.peripheral=UART_PKT->PERIPHERAL;
-			result.status = loopback.uart(UART_PKT->payLoad,loopback_rx_buff,UART_PKT->payloadSize,UART_PKT->numOfIter);
+			 printf("im at UARTPERIPHCHECK :  %d \r\n",cmd.TEST_ID);
+
+			result.testID=UART_PKT.TEST_ID;
+			result.status = loopback.uart(UART_PKT.payLoad,UART_PKT.payloadSize,UART_PKT.numOfIter);
 			if(xQueueSend(resultQueue,&result,portMAX_DELAY)!=pdTRUE){
 				printf("sending FAILED\n");
 			}
 		}
-		vPortFree(UART_PKT->payLoad);
-		vPortFree(UART_PKT);
 	}
 }
 
 void I2CPeriphCheckTASK(void *arg){
-	packet_t* I2C_PKT;
+	packet_t I2C_PKT;
 	resProtocol result;
 	for(;;){
 		if(xQueueReceive(periphQueueTable[I2C], &I2C_PKT, portMAX_DELAY)!=pdFALSE){
-			result.peripheral=I2C_PKT->PERIPHERAL;
-			result.status = loopback.i2c(I2C_PKT->payLoad,loopback_rx_buff,I2C_PKT->payloadSize,I2C_PKT->numOfIter);
+			result.testID=I2C_PKT.TEST_ID;
+			result.status = loopback.i2c(I2C_PKT.payLoad,I2C_PKT.payloadSize,I2C_PKT.numOfIter);
 			if(xQueueSend(resultQueue,&result,portMAX_DELAY)!=pdTRUE){
 							printf("sending FAILED\n");
 			}
 		}
-		vPortFree(I2C_PKT->payLoad);
-		vPortFree(I2C_PKT);
 	}
 }
+
+
 void SPIPeriphCheckTASK(void *arg){
-	packet_t* SPI_PKT;
+	packet_t SPI_PKT;
 	resProtocol result;
 	for(;;){
 		if(xQueueReceive(periphQueueTable[SPI], &SPI_PKT, portMAX_DELAY)!=pdFALSE){
-			result.peripheral=SPI_PKT->PERIPHERAL;
-			result.status = loopback.spi(SPI_PKT->payLoad,loopback_rx_buff,SPI_PKT->payloadSize,SPI_PKT->numOfIter);
+			result.testID=SPI_PKT.TEST_ID;
+			result.status = loopback.spi(SPI_PKT.payLoad,SPI_PKT.payloadSize,SPI_PKT.numOfIter);
 			if(xQueueSend(resultQueue,&result,portMAX_DELAY)!=pdTRUE){
 							printf("sending FAILED\n");
 			}
 		}
-		vPortFree(SPI_PKT->payLoad);
-		vPortFree(SPI_PKT);
 	}
 }
 
@@ -198,7 +189,16 @@ void transmitTask(void *arg){
     resProtocol resTX;
 	for(;;){
 		if(xQueueReceive(resultQueue, &resTX, portMAX_DELAY)==pdTRUE){
-			printf("\r\n%s PASSED THE TEST %d TIMES OUT OF %d\r\n",periphStr[resTX.peripheral],resTX.status,NUM_OF_ITER);
+			printf(
+			 "\r\nTEST ID = %lu | PERIPH = %s | PASSED %u TIMES OUT OF %u\r\n",
+			 resTX.testID,
+			 periphStr[cmd.PERIPHERAL],
+			 resTX.status,
+			 cmd.numOfIter
+			);
+			packet_t pkt = makeResultPacket(resTX.testID,(resTX.status > (NUM_OF_ITER * 0.8)));
+			size_t tx_len = offsetof(packet_t, payLoad) + pkt.payloadSize;
+			HAL_UART_Transmit(&huart2,(uint8_t*)&pkt,tx_len,HAL_MAX_DELAY);
 		}
 	}
 }
@@ -232,10 +232,12 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackTy
   */
 void MX_FREERTOS_Init(void) {
   /* USER CODE BEGIN Init */
-HAL_UART_Receive_IT(&huart3, &ch, 1);
+	printf("hello guys lets begin\r\n");
+HAL_UART_Receive_IT(&huart2,(uint8_t*)&cmd,sizeof(packet_t));
   /* USER CODE END Init */
 
   /* USER CODE BEGIN RTOS_MUTEX */
+
   /* add mutexes, ... */
   /* USER CODE END RTOS_MUTEX */
 
@@ -248,14 +250,14 @@ HAL_UART_Receive_IT(&huart3, &ch, 1);
   /* USER CODE END RTOS_TIMERS */
 
   /* USER CODE BEGIN RTOS_QUEUES */
-	packetQueue= xQueueCreate(4,sizeof(packet_t*));
+//	packetQueue= xQueueCreate(4,sizeof(packet_t));
 
 	//array of QueueTables
-	periphQueueTable[UART] = xQueueCreate(4, sizeof(packet_t*));
-	periphQueueTable[I2C]  = xQueueCreate(4, sizeof(packet_t*));
-	periphQueueTable[SPI]  = xQueueCreate(4, sizeof(packet_t*));
+	periphQueueTable[UART] = xQueueCreate(4, sizeof(packet_t));
+	periphQueueTable[I2C]  = xQueueCreate(4, sizeof(packet_t));
+	periphQueueTable[SPI]  = xQueueCreate(4, sizeof(packet_t));
 
-	routeMsgQueue =xQueueCreate(4,sizeof(packet_t*));
+	routeMsgQueue =xQueueCreate(4,sizeof(packet_t));
 
 	resultQueue=xQueueCreate(4,sizeof(resProtocol));
 
@@ -270,10 +272,12 @@ HAL_UART_Receive_IT(&huart3, &ch, 1);
 
   /* Create the thread(s) */
   /* definition and creation of defaultTask */
+  osThreadDef(defaultTask, StartDefaultTask, osPriorityNormal, 0, 256);
+  defaultTaskHandle = osThreadCreate(osThread(defaultTask), NULL);
 
   /* USER CODE BEGIN RTOS_THREADS */
 	xTaskCreate(transmitTask,"transmitTask", 256, NULL, 1, &uartTx_Handle);
-	xTaskCreate(dispatcherTask, "dispatcherTask", 256, NULL, 1, &dispatcherTask_Handle);
+//	xTaskCreate(dispatcherTask, "dispatcherTask", 256, NULL, 1, &dispatcherTask_Handle);
 
 	xTaskCreate(routerTask, "routerTask", 256, NULL, 1, &routerTask_Handle);
 
@@ -319,29 +323,37 @@ HAL_UART_Receive_IT(&huart3, &ch, 1);
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    if (huart == &huart3)
+
+    if (huart == &huart2)
+        {
+            xTaskNotifyFromISR(
+                uartRxTask_Handle,
+                0,
+                eNoAction,
+                &xHigherPriorityTaskWoken
+            );
+        }
+
+    if (huart == &huart4)
     {
-    	 xTaskNotifyFromISR(
-    			 uartRxTask_Handle,
-    	            0,
-    	            eNoAction,
-    	            &xHigherPriorityTaskWoken
-    	        );
+    	   xTaskNotifyFromISR(
+    	        UARTPeriphCheckTASK_Handle,
+    	        0,
+				eNoAction,
+    	        &xHigherPriorityTaskWoken
+    	    );
+
     }
-
-    if(huart==&huart2){
-
-    	 xTaskNotifyFromISR(
-    			 	 	 	UARTPeriphCheckTASK_Handle,
-    	    	            0,
-    	    	            eNoAction,
-    	    	            &xHigherPriorityTaskWoken
-    	    	        );
+    if (huart == &huart6){
+    	   xTaskNotifyFromISR(
+    	        UARTPeriphCheckTASK_Handle,
+    	        0,
+				eNoAction,
+    	        &xHigherPriorityTaskWoken
+    	    );
     }
-
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
-
 
 
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c){
@@ -357,25 +369,24 @@ void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c){
 		    	    	        );
 	}
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
-
 }
-
 
 
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi){
-	BaseType_t xHigherPriorityTaskWoken;
-	if(hspi==&hspi1){
-		 xTaskNotifyFromISR(
-		    			 	 	 	SPIPeriphCheckTASK_Handle,
-		    	    	            0,
-		    	    	            eNoAction,
-		    	    	            &xHigherPriorityTaskWoken
-		    	    	        );
-		    }
+   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+   if (hspi == &hspi1) {
+		printf("im at SPI1 callback \r\n");
 
-		    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+	   rxSPI1=1;
+       }
+
+       if (hspi == &hspi4) {
+   		printf("im at SPI4 callback \r\n");
+
+    	rxSPI4=1;
+       }
+
 }
-
 
 
 /* USER CODE END PTD */
@@ -403,6 +414,16 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi){
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void const * argument)
+{
+  /* USER CODE BEGIN StartDefaultTask */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartDefaultTask */
+}
 
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */

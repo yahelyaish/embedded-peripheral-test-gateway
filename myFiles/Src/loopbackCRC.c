@@ -13,8 +13,12 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "string.h"
+#include "packet.h"
+#include "stdio.h"
 
 #define SLAVE_ADDR 0x34<<1
+extern volatile uint8_t rxSPI1;
+extern volatile uint8_t rxSPI4;
 
 const loopback_table_t loopback = {
     .uart = uart_loopback_crc,
@@ -23,35 +27,58 @@ const loopback_table_t loopback = {
 };
 
 
-uint8_t uart_loopback_crc(uint8_t *tx, uint8_t *rx,uint8_t len, uint8_t iters)
+uint8_t uart_loopback_crc(uint8_t *tx,uint8_t len, uint8_t iters)
 {
-	uint8_t UARTsuccessCnt=0;
+	uint8_t UART4_6successCnt=0,UART6_4successCnt=0;
+
+	uint8_t rx_buff[len];
+	uint8_t rx_buff_back[len];
 	for(size_t i=0;i<iters;i++)
 	{
-		HAL_UART_Receive_IT(&huart2, rx, len);
-		HAL_UART_Transmit_IT(&huart2, tx, len);
-	    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* ===== UART6 -> UART4 ===== */
 
-	    if(crc_check(tx,rx,len)==CRC_OK){
-				++UARTsuccessCnt;
+		if (HAL_UART_Receive_IT(&huart4, rx_buff, len) != HAL_OK) {
+		    printf("UART4 RX BUSY!\r\n");
+		}
+		HAL_UART_Transmit_IT(&huart6, tx, len);
+		ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+		if (crc_check(tx, rx_buff, len) == CRC_OK){
+		            UART4_6successCnt++;
+		        }
+
+        /* ===== UART4 -> UART6 ===== */
+		 if (HAL_UART_Receive_IT(&huart6, rx_buff, len) != HAL_OK) {
+		 		    printf("UART6 RX BUSY!\r\n");
+		 		}
+        HAL_UART_Transmit_IT(&huart4, rx_buff, len);
+
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        		if (crc_check(tx, rx_buff, len) == CRC_OK){
+        		            UART6_4successCnt++;
+        		        }
+    }
+	//checking UART4-6 and UART6-4 if both passed all
+	if((UART4_6successCnt== iters) && (UART6_4successCnt == iters)){
+	return (iters);
+	}else{
+		//returning the big of both
+		return ((UART4_6successCnt>UART6_4successCnt)? UART4_6successCnt : UART6_4successCnt );
 	}
 }
-	return UARTsuccessCnt;
-}
 
 
 
-uint8_t i2c_loopback_crc(uint8_t *tx, uint8_t *rx,uint8_t len, uint8_t iters)
+uint8_t i2c_loopback_crc(uint8_t *tx,uint8_t len, uint8_t iters)
 {
 	uint8_t I2CsuccessCnt=0;
+	uint8_t rxPacket[len];
 	for(size_t i=0;i<iters;i++)
 	{
-		HAL_I2C_Slave_Receive_IT(&hi2c2, rx, len);
+		HAL_I2C_Slave_Receive_IT(&hi2c2,rxPacket, len);
 		HAL_I2C_Master_Transmit_IT(&hi2c1, SLAVE_ADDR, tx, len);
 
 	    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-
-			if(crc_check(tx,rx,len)==CRC_OK){
+			if(crc_check(tx,rxPacket,len)==CRC_OK){
 				++I2CsuccessCnt;
 	}
 }
@@ -61,27 +88,44 @@ uint8_t i2c_loopback_crc(uint8_t *tx, uint8_t *rx,uint8_t len, uint8_t iters)
 
 
 
-uint8_t spi_loopback_crc(uint8_t *tx, uint8_t *rx,uint8_t len, uint8_t iters)
+uint8_t spi_loopback_crc(uint8_t *tx,uint8_t len, uint8_t iters)
 {
 
-	uint8_t dummy_tx[len],dummy_rx[len];
-	memset(dummy_tx, 0xEE, len);
-	memset(dummy_rx, 0xFF, len);
-	uint8_t SPIsuccessCnt=0;
-
+	uint8_t txSPI4_buff[len],rxSPI4_2[len];
+	uint8_t rxSPI1_buff[len],rxSPI1_2[len];
+	uint8_t SPI1_4successCnt=0,SPI4_1successCnt=0;
+	memset(rxSPI4_2,0,len);
 	for(size_t i=0;i<iters;i++)
 	{
-		HAL_SPI_TransmitReceive_IT(&hspi4, dummy_tx,rx, len);
-		HAL_SPI_TransmitReceive_IT(&hspi1, tx, dummy_rx,len);
+		printf("im at SPI loopback\r\n");
+		HAL_SPI_TransmitReceive_IT(&hspi4, txSPI4_buff, rxSPI4_2, len);
+		HAL_SPI_TransmitReceive_IT(&hspi1, tx, rxSPI1, len);
 
-	    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-			if(crc_check(tx,rx,len)==CRC_OK){
-				++SPIsuccessCnt;
+		printf("im at SPI before flags\r\n");
+
+		while(!(rxSPI1 && rxSPI4));
+		rxSPI1=0;
+		rxSPI4=0;
+		printf("im at SPI before crc\r\n");
+
+		if(crc_check(tx,rxSPI4_2,len)==CRC_OK){
+					++SPI1_4successCnt;
+					printf("im at SPI after crc\r\n");
+
+//		memcpy(txSPI4, rxSPI4_2, len);
+//		HAL_SPI_TransmitReceive_IT(&hspi4, txSPI4, rxSPI4_2, len);
+//		HAL_SPI_TransmitReceive_IT(&hspi1, tx, rxSPI1_2, len);
+//
+//	    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+//
+//			if(crc_check(txSPI4,rxSPI1_2,len)==CRC_OK){
+//				++SPI4_1successCnt;
+//	}
+		}
 	}
-}
-
-	return SPIsuccessCnt;
+	printf("SPI4_1 = %d, SPI1_4 = %d\r\n",SPI4_1successCnt,SPI1_4successCnt);
+	return (SPI4_1successCnt+SPI1_4successCnt);
 }
 
 
@@ -97,4 +141,5 @@ crc_status_t crc_check(uint8_t *tx,uint8_t *rx,uint8_t len){
 	}
 	return CRC_FAIL;
 }
+
 

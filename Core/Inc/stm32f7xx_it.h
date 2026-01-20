@@ -62,6 +62,9 @@ void I2C2_ER_IRQHandler(void);
 void SPI1_IRQHandler(void);
 void USART2_IRQHandler(void);
 void USART3_IRQHandler(void);
+void UART4_IRQHandler(void);
+void USART6_IRQHandler(void);
+void SPI4_IRQHandler(void);
 /* USER CODE BEGIN EFP */
 
 /* USER CODE END EFP */
