@@ -47,3 +47,8 @@ CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
+
+# ===== Executables =====
+PC_HOST
+GBB_GATEWAY
+OUT
