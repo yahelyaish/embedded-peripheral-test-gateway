@@ -49,6 +49,6 @@ cmake_install.cmake
 Makefile
 
 # ===== Executables =====
-PC_HOST
-GBB_GATEWAY
+pc_host/PC_HOST
+gbb_gateaway/GBB_GATEWAY
 OUT
