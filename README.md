@@ -132,7 +132,6 @@ This project is under active development and is designed as a **scalable framewo
 rather than a one-time demo.
 
 Planned future work includes:
-- Completing SPI data path validation and stabilization
 - Adding I2C RX loopback support
 - Extending the packet protocol with acknowledgments, timeouts, and diagnostics
 - Introducing configuration and health-monitoring packets
